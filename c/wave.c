@@ -27,6 +27,7 @@ size_t portable_ish_malloced_size(const void *p) {
 #include <pthread.h>
 #include <time.h>
 #include <math.h>
+#include <string.h>
 
 #define BILLION 1000000000.0
 #define TICK_TIME_S 5
@@ -34,6 +35,7 @@ size_t portable_ish_malloced_size(const void *p) {
 
 struct arg_struct {
     long n;
+    int skip;
     struct timespec ts;
     struct timespec *runtime;
     struct timespec *sleeptime;
@@ -41,6 +43,10 @@ struct arg_struct {
 
 long MiBtoB(long MiB) {
     return MiB * 1 << 20;
+}
+
+long BtoMiB(long B) {
+    return B / (1 << 20);
 }
 
 long BtoKiB(long B) {
@@ -70,7 +76,9 @@ static void sig_handler(int sig)
     }
 }
 
-void allocate_memory(long n, struct timespec ts, struct timespec *runtime, struct timespec *sleeptime) {
+void allocate_memory(long n, int skip, struct timespec ts,
+                     struct timespec *runtime, struct timespec *sleeptime) {
+
     child_thread_id = pthread_self();
     struct timespec start, end;
     clock_gettime(CLOCK_REALTIME, &start);
@@ -94,9 +102,12 @@ void allocate_memory(long n, struct timespec ts, struct timespec *runtime, struc
     //BtoKiB(true_length));
 
     // Populate the elements of the array
-    for (long i = 0; i < n; ++i) {
-        ptr[i] = (int)i%26 + 'a';
+    printf("Filling array...");
+    for (long i = 0; i < n; i=i+skip) {
+        ptr[i] = (int)(i/2)%26 + 'a';
     }
+    printf("Done.\n");
+
 
     clock_gettime(CLOCK_REALTIME, &end);
     double time_spent = (end.tv_sec - start.tv_sec) +
@@ -126,7 +137,7 @@ void allocate_memory(long n, struct timespec ts, struct timespec *runtime, struc
 void *allocate_memory_thread(void *arguments)
 {
     struct arg_struct *args = (struct arg_struct *)arguments;
-    allocate_memory(args -> n, args -> ts, args -> runtime, args -> sleeptime);
+    allocate_memory(args -> n, args -> skip, args -> ts, args -> runtime, args -> sleeptime);
     return NULL;
 }
 
@@ -166,7 +177,7 @@ int main(int argc, char **argv)
     setbuf(stdout, NULL);
 
 
-    if (argc!=4) {
+    if (argc < 4 ||argc > 6) {
         printf("ERR: baseline MiB, max varying MiB, and period in 5s ticks required.\n");
         printf("USAGE:  %s «baseline_bytes» «max_varying_bytes» «period»\n", argv[0]);
         exit(EXIT_FAILURE);
@@ -177,18 +188,40 @@ int main(int argc, char **argv)
     period = atoi(argv[3]);
     tick_index = 0;
 
-    struct timespec ts = {TICK_TIME_S,0};
+    int skip = 1;
+    if (argc>=5) {
+       skip = atoi(argv[4]);
+       if (skip < 1) { 
+           skip = 1;
+        }
+    }
+
+    time_t tick_time = TICK_TIME_S;
+    if (argc==6) {
+        tick_time = atol(argv[5]);
+    }
+
+    struct timespec ts = {tick_time,0};
+
     struct arg_struct args;
+    printf("Parsed Parameters\n");
+    printf("------------------------------\n");
+    printf("  baseline: %luMiB\n", BtoMiB(n));
+    printf("  variable: %luMiB\n", BtoMiB(v));
+    printf("    period: %u\n", period);
+    printf("      skip: %u\n", skip);
+    printf(" tick_time: %lu\n", tick_time);
 
     while (should_run) {
         long variable = calculate_allocation(v, tick_index, period);
         struct timespec runtime, sleeptime;
         args.n = n + variable;
+        args.skip = skip;
         args.ts = ts;
         args.runtime = &runtime;
         args.sleeptime = &sleeptime;
  
-        printf("{phase:\"start\", period: %u, tick: %u, baseline: %lu, variable: %lu}\n", period, tick_index, n, variable);
+        printf("{phase:\"start\", period: %u, tick: %u, baseline: %lu, variable: %lu, total: %luMiB}\n", period, tick_index, n, variable, BtoMiB(n+variable));
         pthread_t thread_id;
         pthread_create(&thread_id, NULL, allocate_memory_thread, (void *)&args);
         pthread_join(thread_id, NULL);
